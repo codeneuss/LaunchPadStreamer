@@ -11,10 +11,33 @@ import (
 	_ "gitlab.com/gomidi/midi/v2/drivers/rtmididrv"
 )
 
+var pads = make(map[uint8]Pad)
+
 type Pad struct {
-	key       uint8
+	pos       PadPos
 	color     uint8
 	lightMode uint8
+}
+
+type PadPos struct {
+	row uint8
+	col uint8
+}
+
+func NewPad(pos PadPos) Pad {
+	return Pad{
+		pos:       pos,
+		color:     0,
+		lightMode: Permanent,
+	}
+}
+
+func (p *Pad) getKey() uint8 {
+	return p.pos.row*10 + p.pos.col
+}
+
+func PadPosFromKey(key uint8) PadPos {
+	return PadPos{uint8(key / 10), uint8(key % 10)}
 }
 
 const (
@@ -53,8 +76,6 @@ func main() {
 
 	clearPad()
 
-	pulsePad(Pad{key: 11, color: 53})
-
 	sig := make(chan os.Signal, 2)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 	<-sig
@@ -80,38 +101,89 @@ func pulsePad(pad Pad) {
 }
 
 func clearPad() {
-	var i uint8
-	for i = 0; i < 128; i++ {
-		if i > 0 {
-			sendNote(Off, Pad{key: i - 1})
+	for r := range uint8(9) {
+		for c := range uint8(9) {
+			sendNote(On, NewPad(PadPos{r + 1, c + 1}))
+			time.Sleep(10 * time.Millisecond)
 		}
-		sendNote(On, Pad{key: i, color: 53})
-		time.Sleep(10 * time.Millisecond)
 	}
 }
 
 func sendNote(on bool, pad Pad) {
+	pads[pad.getKey()] = pad
 	if on {
-		Send(midi.NoteOn(pad.lightMode, pad.key, pad.color))
+		if pad.pos.col > 8 || pad.pos.row > 8 {
+			Send(midi.ControlChange(pad.lightMode, pad.getKey(), pad.color))
+		} else {
+			Send(midi.NoteOn(pad.lightMode, pad.getKey(), pad.color))
+		}
 	} else {
-		Send(midi.NoteOff(pad.lightMode, pad.key))
+		if pad.pos.col > 8 || pad.pos.row > 8 {
+			Send(midi.ControlChange(pad.lightMode, pad.getKey(), 0))
+		} else {
+			Send(midi.NoteOff(pad.lightMode, pad.getKey()))
+
+		}
 	}
 }
 
-var activeKeys = make(map[uint8]bool)
+func changeColor(pad Pad) {
+	var curPad = pads[pad.getKey()]
+
+	fmt.Printf("Current Pad: %v\n", curPad)
+	if curPad.color < 128 {
+		curPad.color = curPad.color + 4
+		fmt.Printf("Color: %d\n", curPad.color)
+	} else {
+		curPad.color = 0
+	}
+	sendNote(On, curPad)
+}
 
 func midiNoteReceived(msg midi.Message, ts int32) {
-	var channel, key, velocity uint8
+	var channel, key, velocity, controller, value uint8
 
 	switch {
 	case msg.GetNoteOn(&channel, &key, &velocity):
-		if velocity > 0 && !activeKeys[key] {
+		if velocity > 0 {
 			fmt.Printf("%d %d %d\n", key, channel, velocity)
-			activeKeys[key] = true
-			go pulsePad(Pad{key: key, color: 53})
+			go changeColor(NewPad(PadPosFromKey(key)))
 
 		}
-	case msg.GetNoteOff(&channel, &key, &velocity):
-		delete(activeKeys, key)
+	case msg.GetControlChange(&channel, &controller, &value):
+		if value > 0 {
+			fmt.Printf("Controller: %d %d %d\n", channel, controller, value)
+			go changeColor(NewPad(PadPosFromKey(controller)))
+		}
 	}
+
 }
+
+const (
+	ColorOff         uint8 = 0
+	ColorWhite       uint8 = 3
+	ColorRed         uint8 = 5
+	ColorRedDim      uint8 = 6
+	ColorRedLight    uint8 = 7
+	ColorOrange      uint8 = 9
+	ColorOrangeDim   uint8 = 10
+	ColorYellow      uint8 = 13
+	ColorYellowLight uint8 = 14
+	ColorLime        uint8 = 17
+	ColorGreen       uint8 = 21
+	ColorGreenDim    uint8 = 22
+	ColorGreenLight  uint8 = 23
+	ColorMint        uint8 = 29
+	ColorCyan        uint8 = 37
+	ColorCyanLight   uint8 = 38
+	ColorSky         uint8 = 41
+	ColorBlue        uint8 = 45
+	ColorBlueDim     uint8 = 46
+	ColorBlueLight   uint8 = 47
+	ColorPurple      uint8 = 49
+	ColorPurpleLight uint8 = 51
+	ColorMagenta     uint8 = 53
+	ColorPink        uint8 = 57
+	ColorPinkLight   uint8 = 58
+	ColorHotPink     uint8 = 56
+)
